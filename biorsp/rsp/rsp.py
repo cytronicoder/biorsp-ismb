@@ -107,30 +107,71 @@ def compute_RMSD_with_permutation(
     scanning_window: float,
     resolution: int,
     scanning_range: np.ndarray,
-    mode: str = "absolute",
+    mode: str = "relative",
     n_perm: int = 1000,
+    min_cells: int = 10,
 ) -> dict:
     """
-    Compute observed RMSD between fg vs reference curve and p-value by permuting foreground labels.
+    FG = theta_fg (subset), BG = theta_bg (all cells).
+    We compute:
+      - bg_ref     : the BG distribution once
+      - obs_rmsd   : RMSD(FG_obs, bg_ref)
+      - null_rmsds : RMSD(FG_perm, bg_ref) over many perms
     """
-    # 1) compute observed curves
-    if mode == "absolute":
-        fg_obs, exp_obs, bg = compute_rsp(
-            theta_fg, theta_bg, scanning_window, resolution, scanning_range, mode=mode
-        )
-        ref = exp_obs
-    else:
-        fg_obs, bg = compute_rsp(
-            theta_fg, theta_bg, scanning_window, resolution, scanning_range, mode=mode
-        )
-        ref = bg
-    obs_rmsd = compute_RMSD(fg_obs, ref)
+    n_fg, n_bg = len(theta_fg), len(theta_bg)
+    M = min(n_fg, n_bg)
+    if M < min_cells:
+        raise ValueError(f"Need ≥{min_cells} cells, got {n_fg} vs {n_bg}")
 
-    # 2) permutation null
-    perm_rmsds = []
-    M = len(theta_fg)
-    for _ in range(n_perm):
+    # 1) compute the BG reference ONCE
+    #    (we ignore FG when building the BG curve)
+    #    mode="relative" returns (fg_curve, bg_curve)
+    if mode == "absolute": # compare expected to observed
+        _, bg_ref, _ = compute_rsp(
+            theta_bg,  # pretend FG=BG so we only care about bg out
+            theta_bg,
+            scanning_window,
+            resolution,
+            scanning_range,
+            mode="absolute",
+        )
+    else:  # mode="relative"
+        _, bg_ref = compute_rsp(
+            theta_bg,  # pretend FG=BG so we only care about bg out
+            theta_bg,
+            scanning_window,
+            resolution,
+            scanning_range,
+            mode="relative",
+        )
+
+    # 2) observed RMSD
+    if mode == "absolute":
+        fg_obs, _, _ = compute_rsp(
+            theta_fg,
+            theta_bg,
+            scanning_window,
+            resolution,
+            scanning_range,
+            mode="absolute",
+        )
+    else:  # mode="relative"
+        fg_obs, _ = compute_rsp(
+            theta_fg,
+            theta_bg,
+            scanning_window,
+            resolution,
+            scanning_range,
+            mode="relative",
+        )
+    obs_rmsd = compute_RMSD(fg_obs, bg_ref)
+
+    # 3) permutation null
+    perm_rmsds = np.empty(n_perm)
+    for i in range(n_perm):
+        # draw a random subset of BG as a fake FG
         fg_perm = np.random.choice(theta_bg, size=M, replace=False)
+
         if mode == "absolute":
             fg_p, _, _ = compute_rsp(
                 fg_perm,
@@ -138,20 +179,33 @@ def compute_RMSD_with_permutation(
                 scanning_window,
                 resolution,
                 scanning_range,
-                mode=mode,
+                mode="absolute",
             )
-            perm_ref = exp_obs
-        else:
+        else:  # mode="relative"
             fg_p, _ = compute_rsp(
                 fg_perm,
                 theta_bg,
                 scanning_window,
                 resolution,
                 scanning_range,
-                mode=mode,
+                mode="relative",
             )
-            perm_ref = bg
-        perm_rmsds.append(compute_RMSD(fg_p, perm_ref))
-    perm_rmsds = np.array(perm_rmsds)
-    p_val = float(np.mean(perm_rmsds >= obs_rmsd))
-    return {"RMSD": obs_rmsd, "p_value": p_val}
+        perm_rmsds[i] = compute_RMSD(fg_p, bg_ref)
+
+    # 4) summarize null
+    null_mean = perm_rmsds.mean()
+    null_std = perm_rmsds.std(ddof=1)
+    z_score = (obs_rmsd - null_mean) / null_std
+    p_val = float((np.sum(perm_rmsds >= obs_rmsd) + 1) / (n_perm + 1))
+    ci_low, ci_up = np.percentile(perm_rmsds, [2.5, 97.5])
+
+    return {
+        "RMSD": obs_rmsd,
+        "p_value": p_val,
+        "z_score": z_score,
+        "null_mean": null_mean,
+        "null_std": null_std,
+        "ci_lower": ci_low,
+        "ci_upper": ci_up,
+        "null_dist": perm_rmsds,
+    }
