@@ -123,27 +123,16 @@ def compute_RMSD_with_permutation(
     if M < min_cells:
         raise ValueError(f"Need ≥{min_cells} cells, got {n_fg} vs {n_bg}")
 
-    # 1) compute the BG reference ONCE
-    #    (we ignore FG when building the BG curve)
-    #    mode="relative" returns (fg_curve, bg_curve)
-    if mode == "absolute": # compare expected to observed
-        _, bg_ref, _ = compute_rsp(
-            theta_bg,  # pretend FG=BG so we only care about bg out
-            theta_bg,
-            scanning_window,
-            resolution,
-            scanning_range,
-            mode="absolute",
-        )
-    else:  # mode="relative"
-        _, bg_ref = compute_rsp(
-            theta_bg,  # pretend FG=BG so we only care about bg out
-            theta_bg,
-            scanning_window,
-            resolution,
-            scanning_range,
-            mode="relative",
-        )
+    # 1) compute the BG reference ONCE using relative mode
+    #    (the BG curve is the same regardless of the downstream mode)
+    _, bg_ref = compute_rsp(
+        theta_bg,
+        theta_bg,
+        scanning_window,
+        resolution,
+        scanning_range,
+        mode="relative",
+    )
 
     # 2) observed RMSD
     if mode == "absolute":
@@ -193,11 +182,11 @@ def compute_RMSD_with_permutation(
         perm_rmsds[i] = compute_RMSD(fg_p, bg_ref)
 
     # 4) summarize null
-    null_mean = perm_rmsds.mean()
-    null_std = perm_rmsds.std(ddof=1)
-    z_score = (obs_rmsd - null_mean) / null_std
+    null_mean = float(perm_rmsds.mean())
+    null_std = float(perm_rmsds.std(ddof=1))
+    z_score = float((obs_rmsd - null_mean) / null_std)
     p_val = float((np.sum(perm_rmsds >= obs_rmsd) + 1) / (n_perm + 1))
-    ci_low, ci_up = np.percentile(perm_rmsds, [2.5, 97.5])
+    ci_low, ci_up = [float(x) for x in np.percentile(perm_rmsds, [2.5, 97.5])]
 
     return {
         "RMSD": obs_rmsd,
